@@ -128,7 +128,7 @@ def get_obo_token(user_token: str) -> str:
         app = ConfidentialClientApplication(
             CLIENT_ID, authority=authority, client_credential=CLIENT_SECRET
         )
-        result = app.acquire_token_for_client(scopes=POWERBI_SCOPE)
+        result = app.acquire_token_for_client(scopes=[POWERBI_SCOPE])
         if "access_token" not in result:
             raise HTTPException(status_code=401, detail="Failed to get app token.")
         return result["access_token"]
@@ -181,27 +181,23 @@ def get_obo_token(user_token: str) -> str:
         )
 
 
-def list_datasets_in_workspace(token: str):
-    url = f"https://api.powerbi.com/v1.0/myorg/groups/{POWERBI_WORKSPACE_ID}/datasets"
+def list_datasets_in_workspace(token: str, workspace_id: str | None = None):
+    workspace_id = workspace_id or POWERBI_WORKSPACE_ID
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets"
     headers = {"Authorization": f"Bearer {token}"}
-    logger.info(f"Listing datasets in workspace: {POWERBI_WORKSPACE_ID}")
-    logger.debug(f"Request URL: {url}")
+    logger.info(f"Listing datasets in workspace: {workspace_id}")
     try:
         resp = requests.get(url, headers=headers)
-        resp.raise_for_status()  # Check for HTTP errors (like 401, 403, 404)
+        resp.raise_for_status()
         datasets = resp.json().get("value", [])
-        logger.info(f"Found {len(datasets)} datasets.")
+        logger.info(f"Found {len(datasets)} datasets in {workspace_id}.")
         return [{"name": ds["name"], "id": ds["id"]} for ds in datasets]
     except requests.exceptions.RequestException as e:
         logger.error(f"Power BI API request failed for listing datasets: {e}")
-        # Re-raise as HTTPException to send error to client
         status_code = (
-            e.response.status_code
-            if hasattr(e, "response") and e.response is not None
-            else 500
+            e.response.status_code if hasattr(e, "response") and e.response else 500
         )
-        detail = f"Power BI API Error: {str(e)}"
-        raise HTTPException(status_code=status_code, detail=detail) from e
+        raise HTTPException(status_code=status_code, detail=str(e)) from e
 
 
 def list_workspaces(token: str):
@@ -502,7 +498,7 @@ def fetch_chart_data(dax_queries: list, dataset_id: str, token: str):
             f"Error during chart data fetching or merging for dataset {dataset_id}."
         )
         raise HTTPException(
-            status_code=500, detail=f"Internal error fetching or processing chart data."
+            status_code=500, detail="Internal error fetching or processing chart data."
         ) from e
 
 
@@ -676,6 +672,35 @@ def get_llm_plan(prompt, columns, table_name):
 # ======================
 class ToolRequest(BaseModel):
     prompt: str
+    workspace_id: str | None = None
+    dataset_id: str | None = None
+
+
+@app.get("/powerbi/workspaces")
+def get_workspaces(request: Request):
+    cookie_token = request.cookies.get("access_token") or request.cookies.get(
+        "teams_token"
+    )
+    if not cookie_token:
+        raise HTTPException(status_code=401, detail="No user token provided")
+    token = get_obo_token(cookie_token)
+    return list_workspaces(token)
+
+
+@app.get("/powerbi/workspaces/{workspace_id}/datasets")
+def get_datasets(workspace_id: str, request: Request):
+    cookie_token = request.cookies.get("access_token") or request.cookies.get(
+        "teams_token"
+    )
+    if not cookie_token:
+        raise HTTPException(status_code=401, detail="No user token provided")
+    token = get_obo_token(cookie_token)
+    # Modify list_datasets_in_workspace to accept workspace_id
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets"
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json().get("value", [])
 
 
 @app.post("/auth/tool/powerbi")
@@ -702,7 +727,7 @@ def handle_tool_call(req: ToolRequest, http_request: Request):
             user_token
         )  # OBO function logs errors internally now
         logger.info("OBO token obtained, proceeding to process prompt.")
-        return process_prompt(req, powerbi_token)
+        return process_prompt(req, powerbi_token, req.workspace_id, req.dataset_id)
     # Catch specific OBO failure
     except HTTPException as http_ex:
         if http_ex.status_code == 401:
@@ -726,8 +751,12 @@ def handle_tool_call(req: ToolRequest, http_request: Request):
         ) from e
 
 
-@app.post("/auth/process_prompt")
-def process_prompt(req: PromptRequest, powerbi_token: str):
+def process_prompt(
+    req: PromptRequest,
+    powerbi_token: str,
+    workspace_id: str | None = None,
+    dataset_id: str | None = None,
+):
     logger.info(f"Processing prompt: '{req.prompt}'")
     try:
         # Step 1: Get intent from LLM (no schema needed yet)
@@ -762,26 +791,41 @@ def process_prompt(req: PromptRequest, powerbi_token: str):
             logger.info("Executing generate_chart intent.")
 
             # A. Get available datasets
-            available_datasets = list_datasets_in_workspace(powerbi_token)
+            available_datasets = list_datasets_in_workspace(powerbi_token, workspace_id)
             if not available_datasets:
                 raise HTTPException(status_code=404, detail="No datasets found.")
 
             # B. Choose relevant dataset
-            dataset_names = [ds["name"] for ds in available_datasets]
-            chosen_dataset_name = choose_relevant_dataset(req.prompt, dataset_names)
-            selected_dataset = next(
-                (ds for ds in available_datasets if ds["name"] == chosen_dataset_name),
-                None,
-            )
-            if not selected_dataset:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Dataset '{chosen_dataset_name}' not found.",
+            if dataset_id:
+                selected_dataset_id = dataset_id
+                selected_dataset_name = next(
+                    (ds["name"] for ds in available_datasets if ds["id"] == dataset_id),
+                    "Unknown Dataset",
                 )
-            selected_dataset_id = selected_dataset["id"]
-            logger.info(
-                f"Using dataset: '{chosen_dataset_name}' (ID: {selected_dataset_id})"
-            )
+                logger.info(
+                    f"Using provided dataset: '{selected_dataset_name}' (ID: {dataset_id})"
+                )
+            else:
+                dataset_names = [ds["name"] for ds in available_datasets]
+                chosen_dataset_name = choose_relevant_dataset(req.prompt, dataset_names)
+                selected_dataset = next(
+                    (
+                        ds
+                        for ds in available_datasets
+                        if ds["name"] == chosen_dataset_name
+                    ),
+                    None,
+                )
+                if not selected_dataset:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Dataset '{chosen_dataset_name}' not found.",
+                    )
+                selected_dataset_id = selected_dataset["id"]
+                selected_dataset_name = chosen_dataset_name
+                logger.info(
+                    f"Chosen dataset: '{selected_dataset_name}' (ID: {selected_dataset_id})"
+                )
 
             # C. Guess the table name using LLM
             chosen_table_name = guess_relevant_table(req.prompt, chosen_dataset_name)
@@ -834,7 +878,7 @@ def process_prompt(req: PromptRequest, powerbi_token: str):
                 y_cols.remove(x_col)
             if not y_cols:
                 raise HTTPException(
-                    status_code=400, detail=f"No numeric Y columns found."
+                    status_code=400, detail="No numeric Y columns found."
                 )
 
             # Get chart type determined by the LLM (default to bar)

@@ -95,6 +95,9 @@ from open_webui.routers import (
     scim,
 )
 
+from open_webui.routers.custom_router import router as custom_router
+
+
 from open_webui.routers.retrieval import (
     get_embedding_function,
     get_reranking_function,
@@ -1279,7 +1282,7 @@ app.add_middleware(
 
 app.mount("/ws", socket_app)
 
-
+app.include_router(custom_router, prefix="/api")
 app.include_router(ollama.router, prefix="/ollama", tags=["ollama"])
 app.include_router(openai.router, prefix="/openai", tags=["openai"])
 
