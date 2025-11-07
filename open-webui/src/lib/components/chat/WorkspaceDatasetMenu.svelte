@@ -2,46 +2,39 @@
 	import { onMount, createEventDispatcher } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { user } from '$lib/stores';
-
+	import { msalInstance } from '../../../msalClient';
 	const dispatch = createEventDispatcher();
 
-	let workspaces = [];
+	let workspaces: any[] = [];
 	let datasets = {};
 	let selectedWorkspace = '';
 	let selectedDataset = '';
 
 	// Fetch all Power BI workspaces and datasets
+
 	onMount(async () => {
 		try {
-			const token = localStorage.getItem('token');
+			// ✅ Extract Entra token from cookies instead of localStorage
+			const cookieToken = undefined;
 
-			// 1️⃣ Fetch workspaces
+			console.log('🪪 Using oauth_id_token (first 40 chars):');
+			// Fetch workspaces
 			const wsResponse = await fetch('/api/powerbi/workspaces', {
-				method: 'GET',
-				credentials: 'include',
-				headers: token ? { Authorization: `Bearer ${token}` } : {}
+				headers: {},
+				credentials: 'include'
 			});
 
 			if (!wsResponse.ok) throw new Error(await wsResponse.text());
 			workspaces = await wsResponse.json();
 
-			// 2️⃣ Fetch datasets for each workspace
+			// Fetch datasets for each workspace
 			for (const ws of workspaces) {
 				const dsResponse = await fetch(`/api/powerbi/workspaces/${ws.id}/datasets`, {
-					method: 'GET',
-					credentials: 'include',
-					headers: token ? { Authorization: `Bearer ${token}` } : {}
+					headers: {},
+					credentials: 'include'
 				});
-
-				if (dsResponse.ok) {
-					datasets[ws.id] = await dsResponse.json();
-				} else {
-					console.warn(`Failed to load datasets for ${ws.name}`);
-				}
+				if (dsResponse.ok) datasets[ws.id] = await dsResponse.json();
 			}
-
-			console.log('✅ Workspaces:', workspaces);
-			console.log('✅ Datasets:', datasets);
 		} catch (err) {
 			console.error('❌ Failed to load Power BI data:', err);
 			toast.error('Failed to fetch Power BI workspaces');

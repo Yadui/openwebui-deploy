@@ -292,65 +292,73 @@ def get_table_columns(table_name: str, dataset_id: str, token: str):
         ) from e
 
 
-def guess_relevant_table(prompt: str, dataset_name: str) -> str:
-    """Uses LLM to guess the most likely table name within a dataset for the given prompt."""
-    logger.info(f"Asking LLM to guess relevant table for dataset '{dataset_name}'.")
-    logger.debug(f"Prompt: '{prompt}'")
-
-    headers = {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"}
-    # Prompt the LLM to guess based on common patterns and the prompt
-    system_content = (
-        f"You are an AI assistant. The user wants data related to '{prompt}' from the Power BI dataset named '{dataset_name}'. "
-        f"Based on the prompt and dataset name, guess the most likely primary table name within that dataset (e.g., 'Sales', 'Sheet1', 'FactTable', 'Data'). "
-        f"Return ONLY the single, most likely table name as a string, without quotes or explanation."
+def guess_relevant_table(
+    prompt: str, dataset_name: str, dataset_id: str, token: str
+) -> str:
+    """Fetches real tables from Power BI, then lets the LLM choose from them."""
+    logger.info(
+        f"Fetching real tables from Power BI for dataset '{dataset_name}' before guessing."
     )
-    user_content = "What is the most likely table name to use?"
-    body = {
-        "messages": [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.1,
-    }  # Allow a little creativity
-    api_version = "2024-02-01"
-    url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{GPT_MODEL}/chat/completions?api-version={api_version}"
-
     try:
+        # Fetch tables using REST API
+        url = f"https://api.powerbi.com/v1.0/myorg/groups/{POWERBI_WORKSPACE_ID}/datasets/{dataset_id}/tables"
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = requests.get(url, headers=headers)
+        resp.raise_for_status()
+        tables = resp.json().get("value", [])
+        table_names = [t["name"] for t in tables if "name" in t]
+
+        if not table_names:
+            logger.error(f"No tables found in dataset '{dataset_name}'.")
+            raise HTTPException(status_code=404, detail="No tables found in dataset.")
+
+        logger.info(f"Available tables in dataset: {table_names}")
+
+        # If only one table, return it immediately
+        if len(table_names) == 1:
+            logger.info(f"Only one table found: '{table_names[0]}'. Using it directly.")
+            return table_names[0]
+
+        # Use LLM to choose from actual table names (not guess blindly)
+        headers = {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"}
+        system_content = (
+            f"You are an AI assistant. The user wants data related to '{prompt}' from the dataset '{dataset_name}'. "
+            f"Choose ONLY ONE table name from this list that best fits: {table_names}. "
+            f"Return ONLY the chosen table name, nothing else."
+        )
+        body = {
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": "Which table is most relevant?"},
+            ],
+            "temperature": 0,
+        }
+        api_version = "2024-02-01"
+        url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{GPT_MODEL}/chat/completions?api-version={api_version}"
+
         resp = requests.post(url, headers=headers, json=body)
         resp.raise_for_status()
-        # Extract the guessed name, remove potential quotes
-        guessed_table = (
+        chosen_table = (
             resp.json()["choices"][0]["message"]["content"]
             .strip()
             .strip('"')
             .strip("'")
         )
-        logger.info(f"LLM guessed table name: '{guessed_table}'")
-        # Basic validation: ensure it's not empty
-        if not guessed_table:
-            logger.error("LLM failed to guess a table name.")
-            raise HTTPException(
-                status_code=500, detail="Could not determine a table name."
+
+        if chosen_table not in table_names:
+            logger.warning(
+                f"LLM returned invalid table '{chosen_table}'. Defaulting to first: '{table_names[0]}'."
             )
-        return guessed_table
+            chosen_table = table_names[0]
+
+        logger.info(f"Final chosen table: '{chosen_table}'")
+        return chosen_table
+
     except requests.exceptions.RequestException as e:
-        logger.error(f"Azure OpenAI API request failed for guessing table: {e}")
-        status_code = (
-            e.response.status_code
-            if hasattr(e, "response") and e.response is not None
-            else 500
-        )
+        logger.error(f"Power BI table fetch failed: {e}")
         raise HTTPException(
-            status_code=status_code,
-            detail=f"Azure OpenAI Error guessing table: {str(e)}",
-        ) from e
-    except Exception as e:
-        logger.exception(
-            f"Unexpected error while guessing table for dataset '{dataset_name}'."
+            status_code=500, detail="Failed to fetch tables from Power BI."
         )
-        raise HTTPException(
-            status_code=500, detail="Internal error guessing relevant table."
-        ) from e
 
 
 def get_dataset_schema_via_dax(dataset_id: str, token: str) -> dict:
@@ -552,65 +560,84 @@ def choose_relevant_dataset(prompt: str, dataset_names: list[str]) -> str:
         ) from e
 
 
-def choose_relevant_table(
-    prompt: str, dataset_name: str, table_names: list[str]
+def guess_relevant_table(
+    prompt: str, dataset_name: str, dataset_id: str, token: str
 ) -> str:
-    logger.info(f"Asking LLM to choose relevant table for dataset '{dataset_name}'.")
-    logger.debug(f"Prompt: '{prompt}', Available Tables: {table_names}")
-    # Handle the simple case directly
-    if len(table_names) == 1:
-        logger.info(
-            f"Only one table found ('{table_names[0]}'), selecting it automatically."
-        )
-        return table_names[0]
-
-    headers = {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"}
-    system_content = f"You are an AI assistant. The user wants data related to '{prompt}' from the Power BI dataset '{dataset_name}'. From the following list of table names, return ONLY the single most relevant table name, and nothing else."
-    user_content = (
-        f"Available Tables: {json.dumps(table_names)}\n\nMost relevant table name?"
+    """Fetch real tables from Power BI if available, else fallback to common defaults."""
+    logger.info(
+        f"Fetching real tables from Power BI for dataset '{dataset_name}' before guessing."
     )
-    body = {
-        "messages": [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0,
-    }
-    api_version = "2024-02-01"
-    url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{GPT_MODEL}/chat/completions?api-version={api_version}"
-
     try:
+        # Try to get real tables via Power BI REST API
+        url = f"https://api.powerbi.com/v1.0/myorg/groups/{POWERBI_WORKSPACE_ID}/datasets/{dataset_id}/tables"
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = requests.get(url, headers=headers)
+
+        if resp.status_code == 404:
+            logger.warning(
+                f"Power BI /tables API not available for dataset '{dataset_name}'. "
+                f"Falling back to common table names."
+            )
+            fallback_tables = ["Sheet1", "Sheet 1", "Table_ExternalData_1"]
+            return fallback_tables[0]  # pick the first as default
+
+        resp.raise_for_status()
+        tables = resp.json().get("value", [])
+        table_names = [t["name"] for t in tables if "name" in t]
+
+        if not table_names:
+            logger.warning(
+                f"No tables found in dataset '{dataset_name}'. Falling back to defaults."
+            )
+            fallback_tables = ["Sheet1", "Sheet 1", "Table_ExternalData_1"]
+            return fallback_tables[0]
+
+        logger.info(f"Available tables in dataset: {table_names}")
+
+        # If only one table, return it directly
+        if len(table_names) == 1:
+            return table_names[0]
+
+        # Use LLM to choose from actual tables
+        headers = {"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"}
+        system_content = (
+            f"You are an AI assistant. The user wants data related to '{prompt}' from the dataset '{dataset_name}'. "
+            f"Choose ONLY ONE table name from this list that best fits: {table_names}. "
+            f"Return ONLY the chosen table name, nothing else."
+        )
+        body = {
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": "Which table is most relevant?"},
+            ],
+            "temperature": 0,
+        }
+        api_version = "2024-02-01"
+        url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{GPT_MODEL}/chat/completions?api-version={api_version}"
+
         resp = requests.post(url, headers=headers, json=body)
         resp.raise_for_status()
         chosen_table = (
-            resp.json()["choices"][0]["message"]["content"].strip().strip('"')
+            resp.json()["choices"][0]["message"]["content"]
+            .strip()
+            .strip('"')
+            .strip("'")
         )
-        logger.info(f"LLM chose table: '{chosen_table}'")
-        # Validate LLM choice
+
         if chosen_table not in table_names:
             logger.warning(
-                f"LLM chose invalid table '{chosen_table}'. Falling back to first."
+                f"LLM chose invalid table '{chosen_table}'. Falling back to '{table_names[0]}'."
             )
-            return table_names[0]  # Fallback to the first table
+            chosen_table = table_names[0]
+
+        logger.info(f"✅ Final chosen table: '{chosen_table}'")
         return chosen_table
+
     except requests.exceptions.RequestException as e:
-        logger.error(f"Azure OpenAI API request failed for choosing table: {e}")
-        status_code = (
-            e.response.status_code
-            if hasattr(e, "response") and e.response is not None
-            else 500
-        )
-        raise HTTPException(
-            status_code=status_code,
-            detail=f"Azure OpenAI Error choosing table: {str(e)}",
-        ) from e
-    except Exception as e:
-        logger.exception(
-            f"Unexpected error while choosing table for dataset '{dataset_name}'."
-        )
-        raise HTTPException(
-            status_code=500, detail="Internal error choosing relevant table."
-        ) from e
+        logger.error(f"Power BI table fetch failed: {e}")
+        fallback_tables = ["Sheet1", "Sheet 1", "Table_ExternalData_1"]
+        logger.warning(f"⚠️ Falling back to default table '{fallback_tables[0]}'")
+        return fallback_tables[0]
 
 
 def get_llm_plan(prompt, columns, table_name):
@@ -828,7 +855,9 @@ def process_prompt(
                 )
 
             # C. Guess the table name using LLM
-            chosen_table_name = guess_relevant_table(req.prompt, chosen_dataset_name)
+            chosen_table_name = guess_relevant_table(
+                req.prompt, selected_dataset_name, selected_dataset_id, powerbi_token
+            )
 
             # D. Try to get columns for the guessed table name
             columns = get_table_columns(

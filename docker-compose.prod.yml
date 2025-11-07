@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  webui:
+    image: millsemichat.azurecr.io/foetron-webui:v1.5 # Or your next version
+    container_name: open-webui-prod
+    ports:
+      - "8080:8080"
+    # env_file will be handled by App Service Configuration
+    networks:
+      - app-net
+
+  charting-tool:
+    image: millsemichat.azurecr.io/foetron-chart-tool:v1.5 # Or your next version
+    container_name: charting-tool-prod
+    ports:
+      - "8050:8050"
+    # env_file will be handled by App Service Configuration
+    networks:
+      - app-net
+    command:
+      ["uvicorn", "powerbi_viz_tool:app", "--host", "0.0.0.0", "--port", "8050"]
+
+networks:
+  app-net:
+    driver: bridge

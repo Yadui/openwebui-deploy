@@ -126,7 +126,12 @@ class ToolsTable:
             )
 
             try:
-                result = Tool(**tool.model_dump())
+                # Ensure new tools default to public if not explicitly restricted
+                tool_data = tool.model_dump()
+                if tool_data.get("access_control") is None:
+                    tool_data["access_control"] = None  # public access
+                result = Tool(**tool_data)
+
                 db.add(result)
                 db.commit()
                 db.refresh(result)

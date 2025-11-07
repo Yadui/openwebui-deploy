@@ -10,7 +10,10 @@ import time
 import random
 import re
 from uuid import uuid4
-
+from open_webui.models.tools import Tools, ToolForm
+from open_webui.models.users import Users
+from open_webui.config import DEFAULT_TOOL_URL, DEFAULT_TOOL_PUBLIC
+import uuid
 
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode, parse_qs, urlparse
@@ -122,6 +125,7 @@ from open_webui.config import (
     OPENAI_API_BASE_URLS,
     OPENAI_API_KEYS,
     OPENAI_API_CONFIGS,
+    OPENWEBUI_DEFAULT_PROVIDER,
     # Direct Connections
     ENABLE_DIRECT_CONNECTIONS,
     # Model list
@@ -618,6 +622,59 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+
+
+@app.on_event("startup")
+async def preload_charting_tool():
+    """
+    Automatically preload an external charting tool for visualization.
+    """
+    if not DEFAULT_TOOL_URL:
+        return
+
+    try:
+        existing_tools = Tools.get_tools()
+        if any(
+            t.meta.manifest.get("url") == DEFAULT_TOOL_URL if t.meta.manifest else False
+            for t in existing_tools
+        ):
+            log.info(f"ℹ️ Charting tool already exists: {DEFAULT_TOOL_URL}")
+            return
+        admin_users = [
+            u for u in Users.get_users() if getattr(u, "role", None) == "admin"
+        ]
+        if not admin_users:
+            log.warning("⚠️ No admin found; skipping charting tool preload.")
+            return
+
+        admin_id = admin_users[0].id
+
+        charting_tool = ToolForm(
+            id=str(uuid.uuid4()),
+            name="Charting Tool",
+            content="",
+            meta={
+                "description": "External charting API for data visualization.",
+                "manifest": {"url": DEFAULT_TOOL_URL},
+            },
+            access_control=None if DEFAULT_TOOL_PUBLIC else {},
+        )
+
+        specs = [
+            {
+                "type": "http",
+                "url": DEFAULT_TOOL_URL,
+                "method": "POST",
+                "description": "Sends data to the charting API.",
+            }
+        ]
+
+        Tools.insert_new_tool(admin_id, charting_tool, specs)
+        log.info(f"✅ Preloaded external tool: {DEFAULT_TOOL_URL}")
+
+    except Exception as e:
+        log.error(f"❌ Failed to preload charting tool: {e}")
+
 
 # For Open WebUI OIDC/OAuth2
 oauth_manager = OAuthManager(app)

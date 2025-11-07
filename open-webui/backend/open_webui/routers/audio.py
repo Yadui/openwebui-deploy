@@ -77,6 +77,21 @@ from pydub import AudioSegment
 from pydub.utils import mediainfo
 
 
+def normalize_tts_url(base_url: str, api_version: str) -> str:
+    """
+    Ensures the correct Azure OpenAI TTS URL format.
+    Removes legacy /cognitiveservices/v1 or incorrect suffixes.
+    """
+    base_url = base_url.rstrip("/")
+    if "cognitiveservices.azure.com" in base_url:
+        base_url = base_url.replace("cognitiveservices.azure.com", "openai.azure.com")
+    if "/cognitiveservices/v1" in base_url:
+        base_url = base_url.replace("/cognitiveservices/v1", "")
+    if not base_url.endswith("/audio/speech"):
+        base_url = f"{base_url}/audio/speech"
+    return f"{base_url}?api-version={api_version}"
+
+
 def is_audio_conversion_required(file_path):
     """
     Check if the given audio file needs conversion to mp3.
@@ -341,13 +356,23 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             async with aiohttp.ClientSession(
                 timeout=timeout, trust_env=True
             ) as session:
+                merged_params = request.app.state.config.TTS_OPENAI_PARAMS or {}
                 payload = {
                     **payload,
-                    **(request.app.state.config.TTS_OPENAI_PARAMS or {}),
+                    **{k: v for k, v in merged_params.items() if k != "api-version"},
                 }
+                payload["model"] = request.app.state.config.TTS_MODEL
+
+                api_version = request.app.state.config.TTS_OPENAI_PARAMS.get(
+                    "api-version", "2025-03-01-preview"
+                )
+                final_url = normalize_tts_url(
+                    request.app.state.config.TTS_OPENAI_API_BASE_URL,
+                    api_version,
+                )
 
                 r = await session.post(
-                    url=f"{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/speech",
+                    url=final_url,
                     json=payload,
                     headers={
                         "Content-Type": "application/json",

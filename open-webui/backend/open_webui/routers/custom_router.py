@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 import httpx
 import requests, os, logging
 from msal import ConfidentialClientApplication
+import jwt
 
 router = APIRouter()
 
@@ -39,6 +40,36 @@ def refresh_microsoft_token(user_token: str):
     return new_token
 
 
+@router.get("/powerbi/workspaces")
+def list_workspaces_api(request: Request):
+    # ✅ Try to get Entra ID token directly from cookies
+    ms_oauth_token = (
+        request.cookies.get("oauth_id_token")
+        or request.cookies.get("id_token")
+        or request.cookies.get("microsoft_token")
+    )
+
+    if not ms_oauth_token:
+        logger.error("❌ Missing Microsoft Entra token cookie.")
+        raise HTTPException(status_code=401, detail="Missing Microsoft login cookie.")
+
+    logger.info(f"🔑 Received oauth_id_token (len={len(ms_oauth_token)}) from cookies")
+
+    # now run the OBO flow with it
+    powerbi_token = get_obo_token(ms_oauth_token)
+    workspaces = list_workspaces(powerbi_token)
+    return [{"name": ws} for ws in workspaces]
+
+
+def is_id_token(token: str) -> bool:
+    try:
+        decoded = jwt.decode(token, options={"verify_signature": False})
+        # Check for Entra ID issuer and ID token claim
+        return "iss" in decoded and "aud" in decoded and "preferred_username" in decoded
+    except Exception:
+        return False
+
+
 def get_obo_token(user_token: str) -> str:
     if not user_token or len(user_token) < 50:
         logger.warning(
@@ -69,11 +100,17 @@ def get_obo_token(user_token: str) -> str:
     )
     logger.debug(f"Using user assertion (token starting with): {user_token_display}")
     # Try refreshing if expired
-    user_token = refresh_microsoft_token(user_token)
-
+    # Directly use Entra ID token for OBO exchange
     result = app.acquire_token_on_behalf_of(
         user_assertion=user_token, scopes=specific_scopes
     )
+    try:
+        decoded = jwt.decode(user_token, options={"verify_signature": False})
+        logger.info(f"🧾 Token issuer: {decoded.get('iss')}")
+        logger.info(f"🧾 Token audience: {decoded.get('aud')}")
+        logger.info(f"🧾 Token username: {decoded.get('preferred_username')}")
+    except Exception as e:
+        logger.warning(f"Failed to decode token claims: {e}")
 
     if "access_token" in result:
         logger.info("OBO token acquisition successful.")
@@ -90,13 +127,21 @@ def get_obo_token(user_token: str) -> str:
         )
         # Log the scopes requested again for context
         logger.error(f"Failed scopes: {specific_scopes}")
+        logger.error(
+            f"OBO flow failed: ErrorCode={error_code}, "
+            f"Description='{error_description}', CorrelationID={correlation_id}"
+        )
+        logger.error(f"Failed scopes: {specific_scopes}")
+
+        clean_msg = (
+            error_description.split("Trace ID")[0].strip()
+            if error_description and "Trace ID" in error_description
+            else error_description
+        )
+
         raise HTTPException(
             status_code=401,
-            detail=f"Could not acquire token on behalf of user. Error: {error_description}",
-        )
-        clean_msg = result["error_description"].split("Trace ID")[0]
-        raise HTTPException(
-            status_code=401, detail=f"OBO Token Error: {clean_msg.strip()}"
+            detail=f"OBO Token Error: {clean_msg}",
         )
 
 
@@ -143,34 +188,6 @@ def list_workspaces(token: str):
         )
         detail = f"Power BI API Error: {str(e)}"
         raise HTTPException(status_code=status_code, detail=detail) from e
-
-
-@router.get("/powerbi/workspaces")
-def list_workspaces_api(request: Request):
-    # Try to extract the *real* Microsoft Entra token (set by OpenWebUI after Microsoft login)
-    auth_header = request.headers.get("Authorization")
-    ms_oauth_token = (
-        request.cookies.get("oauth_id_token")
-        or request.cookies.get("microsoft_token")
-        or request.cookies.get("id_token")
-    )
-
-    user_token = None
-
-    if auth_header and auth_header.startswith("Bearer "):
-        user_token = auth_header.split(" ")[1]
-    elif ms_oauth_token:
-        user_token = ms_oauth_token
-    else:
-        logger.error("No valid Microsoft Entra token found in request.")
-        raise HTTPException(status_code=401, detail="Missing Microsoft Entra token.")
-
-    # 2️⃣ Exchange for OBO token
-    powerbi_token = get_obo_token(user_token)
-
-    # 3️⃣ Call Power BI API using the same helper
-    workspaces = list_workspaces(powerbi_token)
-    return [{"name": ws} for ws in workspaces]
 
 
 @router.get("/powerbi/workspaces/{workspace_id}/datasets")

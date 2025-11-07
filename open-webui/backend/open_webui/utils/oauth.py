@@ -1327,15 +1327,15 @@ class OAuthManager:
             secure=WEBUI_AUTH_COOKIE_SECURE,
         )
 
-        # Legacy cookies for compatibility with older frontend versions
-        if ENABLE_OAUTH_ID_TOKEN_COOKIE:
-            response.set_cookie(
-                key="oauth_id_token",
-                value=token.get("id_token"),
-                httponly=True,
-                samesite=WEBUI_AUTH_COOKIE_SAME_SITE,
-                secure=WEBUI_AUTH_COOKIE_SECURE,
-            )
+        response.set_cookie(
+            key="oauth_id_token",
+            value=token.get("id_token"),
+            httponly=True,
+            samesite=WEBUI_AUTH_COOKIE_SAME_SITE or "Lax",
+            secure=WEBUI_AUTH_COOKIE_SECURE or False,
+            path="/",
+            domain="localhost",
+        )
 
         try:
             # Add timestamp for tracking

@@ -1,4 +1,5 @@
 import os
+import uuid
 import re
 import subprocess
 import sys
@@ -6,10 +7,13 @@ from importlib import util
 import types
 import tempfile
 import logging
+import time
 
 from open_webui.env import SRC_LOG_LEVELS, PIP_OPTIONS, PIP_PACKAGE_INDEX_OPTIONS
 from open_webui.models.functions import Functions
-from open_webui.models.tools import Tools
+from open_webui.models.tools import Tools, ToolForm
+from open_webui.config import DEFAULT_TOOL_URL, DEFAULT_TOOL_PUBLIC
+from open_webui.models.users import Users
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
@@ -69,7 +73,6 @@ def replace_imports(content):
 
 
 def load_tool_module_by_id(tool_id, content=None):
-
     if content is None:
         tool = Tools.get_tool_by_id(tool_id)
         if not tool:
@@ -286,10 +289,7 @@ def install_frontmatter_requirements(requirements: str):
 def install_tool_and_function_dependencies():
     """
     Install all dependencies for all admin tools and active functions.
-
-    By first collecting all dependencies from the frontmatter of each tool and function,
-    and then installing them using pip. Duplicates or similar version specifications are
-    handled by pip as much as possible.
+    Also ensures the default external tool is preloaded.
     """
     function_list = Functions.get_functions(active_only=True)
     tool_list = Tools.get_tools()

@@ -1008,6 +1008,11 @@ ENABLE_OPENAI_API = PersistentConfig(
     "openai.enable",
     os.environ.get("ENABLE_OPENAI_API", "True").lower() == "true",
 )
+OPENWEBUI_DEFAULT_PROVIDER = os.environ.get("OPENWEBUI_DEFAULT_PROVIDER", "openai")
+OPENWEBUI_DEFAULT_API_VERSION = os.environ.get("OPENWEBUI_DEFAULT_API_VERSION", "")
+
+DEFAULT_AZURE = OPENWEBUI_DEFAULT_PROVIDER.lower() == "azure"
+DEFAULT_API_VERSION = OPENWEBUI_DEFAULT_API_VERSION
 
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -1090,6 +1095,8 @@ TOOL_SERVER_CONNECTIONS = PersistentConfig(
     "tool_server.connections",
     tool_server_connections,
 )
+DEFAULT_TOOL_URL = os.environ.get("DEFAULT_TOOL_URL", "")
+DEFAULT_TOOL_PUBLIC = os.environ.get("DEFAULT_TOOL_PUBLIC", "false").lower() == "true"
 
 ####################################
 # WEBUI

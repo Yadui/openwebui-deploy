@@ -36,8 +36,32 @@
 
 	let connectionType = 'external';
 	let azure = false;
-	$: azure =
-		(url.includes('azure.') || url.includes('cognitive.microsoft.com')) && !direct ? true : false;
+	$: if (!direct && url && azure === false) {
+		if (
+			url.includes('azure.') ||
+			url.includes('cognitiveservices.azure.com') ||
+			url.includes('microsoft.com')
+		) {
+			azure = true;
+		}
+	}
+	let defaultProvider = 'openai';
+
+	onMount(async () => {
+		try {
+			const res = await fetch('/api/config');
+			const data = await res.json();
+			defaultProvider = data.defaults?.provider ?? 'openai';
+			if (defaultProvider === 'azure') {
+				azure = true;
+				if (!apiVersion) apiVersion = '2025-01-01-preview';
+			}
+		} catch (e) {
+			console.warn('⚠️ Could not fetch default provider, using OpenAI.');
+		}
+
+		init();
+	});
 
 	let prefixId = '';
 	let enable = true;
@@ -224,7 +248,9 @@
 			}
 		}
 	};
-
+	$: if (azure && !apiVersion) {
+		apiVersion = '2025-01-01-preview';
+	}
 	$: if (show) {
 		init();
 	}
