@@ -1,8 +1,12 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { getTimeRange } from '$lib/utils';
 
+import { get } from 'svelte/store';
+import { selectedPowerBIContext } from '$lib/stores/powerbiStore';
 export const createNewChat = async (token: string, chat: object, folderId: string | null) => {
 	let error = null;
+
+	const context = get(selectedPowerBIContext);
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/new`, {
 		method: 'POST',
@@ -12,8 +16,12 @@ export const createNewChat = async (token: string, chat: object, folderId: strin
 			authorization: `Bearer ${token}`
 		},
 		body: JSON.stringify({
-			chat: chat,
-			folder_id: folderId ?? null
+			...chat,
+			folder_id: folderId ?? null,
+			metadata: {
+				powerbi_workspace_id: context?.workspaceId || null,
+				powerbi_dataset_id: context?.datasetId || null
+			}
 		})
 	})
 		.then(async (res) => {

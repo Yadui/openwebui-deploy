@@ -98,7 +98,7 @@ from open_webui.routers import (
     scim,
 )
 
-from open_webui.routers.custom_router import router as custom_router
+from open_webui.routers import custom_router
 
 
 from open_webui.routers.retrieval import (
@@ -1339,7 +1339,7 @@ app.add_middleware(
 
 app.mount("/ws", socket_app)
 
-app.include_router(custom_router, prefix="/api")
+app.include_router(custom_router.router, prefix="/api")
 app.include_router(ollama.router, prefix="/ollama", tags=["ollama"])
 app.include_router(openai.router, prefix="/openai", tags=["openai"])
 
@@ -1581,6 +1581,18 @@ async def chat_completion(
 
         request.state.metadata = metadata
         form_data["metadata"] = metadata
+
+        # Merge Power BI metadata from frontend if provided
+        frontend_metadata = form_data.get("metadata", {})
+        if isinstance(frontend_metadata, dict):
+            metadata.update(
+                {
+                    "powerbi_workspace_id": frontend_metadata.get(
+                        "powerbi_workspace_id"
+                    ),
+                    "powerbi_dataset_id": frontend_metadata.get("powerbi_dataset_id"),
+                }
+            )
 
     except Exception as e:
         log.debug(f"Error processing chat metadata: {e}")

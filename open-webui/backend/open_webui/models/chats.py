@@ -2,7 +2,7 @@ import logging
 import json
 import time
 import uuid
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from open_webui.internal.db import Base, get_db
 from open_webui.models.tags import TagModel, Tag, Tags
@@ -81,8 +81,9 @@ class ChatModel(BaseModel):
 
 
 class ChatForm(BaseModel):
-    chat: dict
+    title: Optional[str] = None
     folder_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = {}
 
 
 class ChatImportForm(ChatForm):
@@ -126,16 +127,17 @@ class ChatTable:
     def insert_new_chat(self, user_id: str, form_data: ChatForm) -> Optional[ChatModel]:
         with get_db() as db:
             id = str(uuid.uuid4())
+            history = {"messages": {}}  # always include messages map
+
+            chat_payload = {"title": form_data.title or "New Chat", "history": history}
+
             chat = ChatModel(
                 **{
                     "id": id,
                     "user_id": user_id,
-                    "title": (
-                        form_data.chat["title"]
-                        if "title" in form_data.chat
-                        else "New Chat"
-                    ),
-                    "chat": form_data.chat,
+                    "title": form_data.title or "New Chat",
+                    "chat": chat_payload,
+                    "meta": form_data.metadata or {},
                     "folder_id": form_data.folder_id,
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
@@ -428,7 +430,6 @@ class ChatTable:
         skip: int = 0,
         limit: int = 50,
     ) -> list[ChatModel]:
-
         with get_db() as db:
             query = db.query(Chat).filter_by(user_id=user_id, archived=True)
 

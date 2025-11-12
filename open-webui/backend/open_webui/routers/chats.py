@@ -24,10 +24,12 @@ from pydantic import BaseModel
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 
+
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
 
 router = APIRouter()
+
 
 ############################
 # GetChatList
@@ -72,7 +74,6 @@ def get_session_user_chat_list(
 
 @router.delete("/", response_model=bool)
 async def delete_all_user_chats(request: Request, user=Depends(get_verified_user)):
-
     if user.role == "user" and not has_permission(
         user.id, "chat.delete", request.app.state.config.USER_PERMISSIONS
     ):
@@ -454,11 +455,33 @@ async def get_chat_by_id(id: str, user=Depends(get_verified_user)):
 
 @router.post("/{id}", response_model=Optional[ChatResponse])
 async def update_chat_by_id(
-    id: str, form_data: ChatForm, user=Depends(get_verified_user)
+    request: Request, id: str, form_data: ChatForm, user=Depends(get_verified_user)
 ):
+    body = await request.json()
+
+    chat_data = body.get("chat", {})
+    metadata = chat_data.get("metadata", {})
+
+    workspace_id = metadata.get("powerbi_workspace_id")
+    dataset_id = metadata.get("powerbi_dataset_id")
+
+    if workspace_id and dataset_id:
+        log.info(
+            f"🟢 Power BI context detected: workspace={workspace_id}, dataset={dataset_id}"
+        )
+        chat_data["context_info"] = {
+            "workspace_id": workspace_id,
+            "dataset_id": dataset_id,
+            "source": "powerbi",
+        }
     chat = Chats.get_chat_by_id_and_user_id(id, user.id)
     if chat:
-        updated_chat = {**chat.chat, **form_data.chat}
+        updated_chat = {
+            **chat.chat,
+            "title": form_data.title or chat.title,
+        }
+        if form_data.metadata:
+            chat.meta.update(form_data.metadata)
         chat = Chats.update_chat_by_id(id, updated_chat)
         return ChatResponse(**chat.model_dump())
     else:
@@ -684,7 +707,6 @@ async def clone_chat_by_id(
 
 @router.post("/{id}/clone/shared", response_model=Optional[ChatResponse])
 async def clone_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
-
     if user.role == "admin":
         chat = Chats.get_chat_by_id(id)
     else:

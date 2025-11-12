@@ -98,7 +98,12 @@ type BaseModel = {
 	info?: ModelConfig;
 	owned_by: 'ollama' | 'openai' | 'arena';
 };
-
+interface WorkspaceSettings {
+	workspaceId: string;
+	workspaceName: string;
+	selectedDatasets: string[];
+	lastRefreshed?: string;
+}
 export interface OpenAIModel extends BaseModel {
 	owned_by: 'openai';
 	external: boolean;

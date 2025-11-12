@@ -64,6 +64,7 @@
 						}))}
 						{pinModelHandler}
 						bind:value={selectedModel}
+						disabled={!$settings?.workspace?.datasetId}
 					/>
 				</div>
 			</div>

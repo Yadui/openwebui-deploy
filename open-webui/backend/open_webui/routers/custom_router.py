@@ -3,6 +3,8 @@ import httpx
 import requests, os, logging
 from msal import ConfidentialClientApplication
 import jwt
+from open_webui.auth.msal_helper import get_user_powerbi_token
+import time
 
 router = APIRouter()
 
@@ -14,6 +16,13 @@ POWERBI_SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
 logger = logging.getLogger("webui_powerbi")
 
 CHARTING_URL = os.getenv("CHARTING_URL")
+
+# Simple cache for workspaces with 10-minute expiration
+workspace_cache = {
+    "data": None,
+    "timestamp": 0,
+    "ttl": 600,  # 10 minutes in seconds
+}
 
 
 # ======================
@@ -42,23 +51,38 @@ def refresh_microsoft_token(user_token: str):
 
 @router.get("/powerbi/workspaces")
 def list_workspaces_api(request: Request):
-    # ✅ Try to get Entra ID token directly from cookies
-    ms_oauth_token = (
-        request.cookies.get("oauth_id_token")
-        or request.cookies.get("id_token")
-        or request.cookies.get("microsoft_token")
-    )
+    logger.info("🟡 /powerbi/workspaces called.")
+    logger.info(f"🔍 Cookies received: {list(request.cookies.keys())}")
 
-    if not ms_oauth_token:
-        logger.error("❌ Missing Microsoft Entra token cookie.")
-        raise HTTPException(status_code=401, detail="Missing Microsoft login cookie.")
+    current_time = time.time()
+    if (
+        workspace_cache["data"] is not None
+        and current_time - workspace_cache["timestamp"] < workspace_cache["ttl"]
+    ):
+        logger.info("Returning cached workspaces data.")
+        return workspace_cache["data"]
 
-    logger.info(f"🔑 Received oauth_id_token (len={len(ms_oauth_token)}) from cookies")
+    try:
+        token = get_user_powerbi_token(request)
+        logger.info("✅ Got Power BI token from request.")
+    except Exception as e:
+        logger.error(f"❌ get_user_powerbi_token failed: {e}")
+        raise HTTPException(
+            status_code=401, detail=f"Token extraction failed: {str(e)}"
+        )
 
-    # now run the OBO flow with it
-    powerbi_token = get_obo_token(ms_oauth_token)
-    workspaces = list_workspaces(powerbi_token)
-    return [{"name": ws} for ws in workspaces]
+    logger.info("Fetching workspaces from Power BI API.")
+    try:
+        workspaces = list_workspaces(token)
+        workspace_cache["data"] = workspaces
+        workspace_cache["timestamp"] = current_time
+        logger.info(f"✅ Cached {len(workspaces)} workspaces for 10 minutes.")
+        return workspaces
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch workspaces: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch workspaces: {str(e)}"
+        )
 
 
 def is_id_token(token: str) -> bool:
@@ -70,94 +94,21 @@ def is_id_token(token: str) -> bool:
         return False
 
 
-def get_obo_token(user_token: str) -> str:
-    if not user_token or len(user_token) < 50:
-        logger.warning(
-            "No valid user token detected, using client_credentials fallback."
-        )
-        authority = f"https://login.microsoftonline.com/{TENANT_ID}"
-        app = ConfidentialClientApplication(
-            CLIENT_ID, authority=authority, client_credential=CLIENT_SECRET
-        )
-        result = app.acquire_token_for_client(scopes=POWERBI_SCOPE)
-        if "access_token" not in result:
-            raise HTTPException(status_code=401, detail="Failed to get app token.")
-        return result["access_token"]
-    logger.info("Attempting On-Behalf-Of token acquisition.")
-    authority = f"https://login.microsoftonline.com/{TENANT_ID}"
-    app = ConfidentialClientApplication(
-        client_id=CLIENT_ID, authority=authority, client_credential=CLIENT_SECRET
-    )
-
-    # Define the specific scopes needed for OBO with Power BI
-    specific_scopes = ["https://analysis.windows.net/powerbi/api/.default"]
-
-    logger.debug(f"Requesting OBO token with scopes: {specific_scopes}")
-
-    # Truncate token for logging security
-    user_token_display = (
-        f"{user_token[:10]}...{user_token[-4:]}" if len(user_token) > 14 else user_token
-    )
-    logger.debug(f"Using user assertion (token starting with): {user_token_display}")
-    # Try refreshing if expired
-    # Directly use Entra ID token for OBO exchange
-    result = app.acquire_token_on_behalf_of(
-        user_assertion=user_token, scopes=specific_scopes
-    )
-    try:
-        decoded = jwt.decode(user_token, options={"verify_signature": False})
-        logger.info(f"🧾 Token issuer: {decoded.get('iss')}")
-        logger.info(f"🧾 Token audience: {decoded.get('aud')}")
-        logger.info(f"🧾 Token username: {decoded.get('preferred_username')}")
-    except Exception as e:
-        logger.warning(f"Failed to decode token claims: {e}")
-
-    if "access_token" in result:
-        logger.info("OBO token acquisition successful.")
-        # Avoid logging the full token itself for security
-        logger.debug("OBO token acquired.")
-        return result["access_token"]
-    else:
-        # Log the detailed error from Microsoft Entra ID
-        error_code = result.get("error")
-        error_description = result.get("error_description")
-        correlation_id = result.get("correlation_id")
-        logger.error(
-            f"OBO flow failed: ErrorCode={error_code}, Description='{error_description}', CorrelationID={correlation_id}"
-        )
-        # Log the scopes requested again for context
-        logger.error(f"Failed scopes: {specific_scopes}")
-        logger.error(
-            f"OBO flow failed: ErrorCode={error_code}, "
-            f"Description='{error_description}', CorrelationID={correlation_id}"
-        )
-        logger.error(f"Failed scopes: {specific_scopes}")
-
-        clean_msg = (
-            error_description.split("Trace ID")[0].strip()
-            if error_description and "Trace ID" in error_description
-            else error_description
-        )
-
-        raise HTTPException(
-            status_code=401,
-            detail=f"OBO Token Error: {clean_msg}",
-        )
-
-
-def list_datasets_in_workspace(token: str):
-    url = f"https://api.powerbi.com/v1.0/myorg/groups/{WORKSPACE_ID}/datasets"
+def list_datasets_in_workspace(token: str, workspace_id: str):
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets"
     headers = {"Authorization": f"Bearer {token}"}
-    logger.info(f"Listing datasets in workspace: {WORKSPACE_ID}")
+    logger.info(f"Listing datasets in workspace: {workspace_id}")
     logger.debug(f"Request URL: {url}")
     try:
         resp = requests.get(url, headers=headers)
         resp.raise_for_status()  # Check for HTTP errors (like 401, 403, 404)
         datasets = resp.json().get("value", [])
-        logger.info(f"Found {len(datasets)} datasets.")
+        logger.info(f"Found {len(datasets)} datasets in workspace {workspace_id}.")
         return [{"name": ds["name"], "id": ds["id"]} for ds in datasets]
     except requests.exceptions.RequestException as e:
-        logger.error(f"Power BI API request failed for listing datasets: {e}")
+        logger.error(
+            f"Power BI API request failed for listing datasets in workspace {workspace_id}: {e}"
+        )
         # Re-raise as HTTPException to send error to client
         status_code = (
             e.response.status_code
@@ -171,14 +122,14 @@ def list_datasets_in_workspace(token: str):
 def list_workspaces(token: str):
     url = "https://api.powerbi.com/v1.0/myorg/groups"
     headers = {"Authorization": f"Bearer {token}"}
-    logger.info("Listing workspaces.")
+    logger.info("Listing workspaces from Power BI API.")
     logger.debug(f"Request URL: {url}")
     try:
         resp = requests.get(url, headers=headers)
         resp.raise_for_status()
         workspaces = resp.json().get("value", [])
         logger.info(f"Found {len(workspaces)} workspaces.")
-        return [ws["name"] for ws in workspaces]
+        return [{"name": ws["name"], "id": ws["id"]} for ws in workspaces]
     except requests.exceptions.RequestException as e:
         logger.error(f"Power BI API request failed for listing workspaces: {e}")
         status_code = (
@@ -192,26 +143,8 @@ def list_workspaces(token: str):
 
 @router.get("/powerbi/workspaces/{workspace_id}/datasets")
 def list_datasets_api(workspace_id: str, request: Request):
-    auth_header = request.headers.get("Authorization")
-    ms_oauth_token = (
-        request.cookies.get("oauth_id_token")
-        or request.cookies.get("microsoft_token")
-        or request.cookies.get("id_token")
-    )
-
-    user_token = None
-
-    if auth_header and auth_header.startswith("Bearer "):
-        user_token = auth_header.split(" ")[1]
-    elif ms_oauth_token:
-        user_token = ms_oauth_token
-    else:
-        logger.error("No valid Microsoft Entra token found in request.")
-        raise HTTPException(status_code=401, detail="Missing Microsoft Entra token.")
-
-    powerbi_token = get_obo_token(user_token)
-    datasets = list_datasets_in_workspace(powerbi_token)
-    return datasets
+    token = get_user_powerbi_token(request)
+    return list_datasets_in_workspace(token, workspace_id)
 
 
 @router.api_route("/powerbi/{path:path}", methods=["GET", "POST"])

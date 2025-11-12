@@ -22,7 +22,7 @@
 
 	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import ModelSelector from '../chat/ModelSelector.svelte';
-	import WorkspaceDatasetMenu from '../chat/WorkspaceDatasetMenu.svelte';
+	import WorkspaceSelector from '../chat/WorkspaceSelector.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Menu from '$lib/components/layout/Navbar/Menu.svelte';
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
@@ -101,15 +101,16 @@
 
 				<div
 					class="flex-1 overflow-hidden max-w-full py-0.5
-			{$showSidebar ? 'ml-1' : ''}
-			"
+	{$showSidebar ? 'ml-1' : ''}
+"
 				>
 					{#if showModelSelector}
-						<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
-						<WorkspaceDatasetMenu bind:selectedDatasets />
+						<div class="flex items-center space-x-2">
+							<WorkspaceSelector bind:selectedDatasets />
+							<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
+						</div>
 					{/if}
 				</div>
-
 				<div class="self-start flex flex-none items-center text-gray-600 dark:text-gray-400">
 					<!-- <div class="md:hidden flex self-center w-[1px] h-5 mx-2 bg-gray-300 dark:bg-stone-700" /> -->
 

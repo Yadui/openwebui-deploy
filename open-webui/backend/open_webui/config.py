@@ -662,6 +662,8 @@ def load_oauth_providers():
             "redirect_uri": MICROSOFT_REDIRECT_URI.value,
             "picture_url": MICROSOFT_CLIENT_PICTURE_URL.value,
             "register": microsoft_oauth_register,
+            "scope": MICROSOFT_OAUTH_SCOPE.value
+            + " https://analysis.windows.net/powerbi/api/.default",
         }
 
     if GITHUB_CLIENT_ID.value and GITHUB_CLIENT_SECRET.value:

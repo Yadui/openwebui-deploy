@@ -507,7 +507,6 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
 
         for idx, models in enumerate(model_lists):
             if models is not None and "error" not in models:
-
                 merged_list.extend(
                     [
                         {
@@ -815,6 +814,27 @@ async def generate_chat_completion(
 
     payload = {**form_data}
     metadata = payload.pop("metadata", None)
+
+    if metadata:
+        powerbi_workspace_id = metadata.get("powerbi_workspace_id")
+        powerbi_dataset_id = metadata.get("powerbi_dataset_id")
+        log.info(
+            f"💡 Injected Power BI context: {powerbi_workspace_id} | {powerbi_dataset_id}"
+        )
+        if powerbi_workspace_id and powerbi_dataset_id:
+            context_text = (
+                f"The user is working with Power BI Workspace ID: {powerbi_workspace_id} "
+                f"and Dataset ID: {powerbi_dataset_id}. "
+                f"Any data-related queries should use this dataset context for analysis or DAX queries."
+            )
+
+            # If messages exist, prepend a system message with this info
+            if "messages" in payload and isinstance(payload["messages"], list):
+                payload["messages"].insert(
+                    0, {"role": "system", "content": context_text}
+                )
+            else:
+                payload["messages"] = [{"role": "system", "content": context_text}]
 
     model_id = form_data.get("model")
     model_info = Models.get_model_by_id(model_id)

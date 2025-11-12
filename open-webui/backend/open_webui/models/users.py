@@ -43,6 +43,10 @@ class User(Base):
     api_key = Column(String, nullable=True, unique=True)
     oauth_sub = Column(Text, unique=True)
 
+    powerbi_access_token = Column(Text, nullable=True)
+    powerbi_refresh_token = Column(Text, nullable=True)
+    powerbi_expires_at = Column(BigInteger, nullable=True)
+
     last_active_at = Column(BigInteger)
 
     updated_at = Column(BigInteger)
@@ -453,6 +457,39 @@ class UsersTable:
                 return UserModel.model_validate(user)
             else:
                 return None
+
+    def update_user_powerbi_tokens(
+        self, user_id: str, access_token: str, refresh_token: str, expires_at: datetime
+    ) -> bool:
+        try:
+            with get_db() as db:
+                db.query(User).filter_by(id=user_id).update(
+                    {
+                        "powerbi_access_token": access_token,
+                        "powerbi_refresh_token": refresh_token,
+                        "powerbi_expires_at": int(expires_at.timestamp()),
+                        "updated_at": int(time.time()),
+                    }
+                )
+                db.commit()
+                return True
+        except Exception as e:
+            print(f"Failed to update Power BI tokens for user {user_id}: {e}")
+            return False
+
+    def get_user_powerbi_tokens(self, user_id: str) -> Optional[dict]:
+        try:
+            with get_db() as db:
+                user = db.query(User).filter_by(id=user_id).first()
+                if user:
+                    return {
+                        "access_token": user.powerbi_access_token,
+                        "refresh_token": user.powerbi_refresh_token,
+                        "expires_at": user.powerbi_expires_at,
+                    }
+        except Exception as e:
+            print(f"Failed to get Power BI tokens for user {user_id}: {e}")
+            return None
 
 
 Users = UsersTable()

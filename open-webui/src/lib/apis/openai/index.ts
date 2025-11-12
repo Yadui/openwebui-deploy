@@ -1,4 +1,6 @@
 import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+import { get } from 'svelte/store';
+import { selectedPowerBIContext } from '$lib/stores/powerbiStore';
 
 export const getOpenAIConfig = async (token: string = '') => {
 	let error = null;
@@ -366,6 +368,19 @@ export const generateOpenAIChatCompletion = async (
 ) => {
 	let error = null;
 
+	// 🟢 Get Power BI context from the store
+	const context = get(selectedPowerBIContext);
+
+	// 🟢 Merge it into the outgoing request body
+	const enhancedBody = {
+		...body,
+		metadata: {
+			...(body as any).metadata,
+			powerbi_workspace_id: context?.workspaceId || null,
+			powerbi_dataset_id: context?.datasetId || null
+		}
+	};
+
 	const res = await fetch(`${url}/chat/completions`, {
 		method: 'POST',
 		headers: {
@@ -373,7 +388,7 @@ export const generateOpenAIChatCompletion = async (
 			'Content-Type': 'application/json'
 		},
 		credentials: 'include',
-		body: JSON.stringify(body)
+		body: JSON.stringify(enhancedBody)
 	})
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();

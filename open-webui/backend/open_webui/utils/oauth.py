@@ -1101,8 +1101,26 @@ class OAuthManager:
         error_message = None
         try:
             client = self.get_client(provider)
+
             try:
                 token = await client.authorize_access_token(request)
+                # Store Power BI tokens if Microsoft login
+                if provider == "microsoft":
+                    from datetime import datetime, timedelta
+                    from open_webui.models.users import Users
+
+                    access_token = token.get("access_token")
+                    refresh_token = token.get("refresh_token")
+                    expires_in = token.get("expires_in", 3600)
+
+                    if access_token:
+                        expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+                        Users.update_user_powerbi_tokens(
+                            user_id=None,  # Placeholder, you'll know the user later
+                            access_token=access_token,
+                            refresh_token=refresh_token,
+                            expires_at=expires_at,
+                        )
             except Exception as e:
                 log.warning(f"OAuth callback error: {e}")
                 raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
@@ -1212,6 +1230,20 @@ class OAuthManager:
 
             if user:
                 determined_role = self.get_user_role(user, user_data)
+                if provider == "microsoft":
+                    from datetime import datetime, timedelta
+
+                    expires_in = token.get("expires_in", 3600)
+                    expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+
+                    Users.update_user_powerbi_tokens(
+                        user_id=user.id,
+                        access_token=token.get("access_token"),
+                        refresh_token=token.get("refresh_token"),
+                        expires_at=expires_at,
+                    )
+
+                    log.info(f"Stored delegated Power BI tokens for user {user.email}")
                 if user.role != determined_role:
                     Users.update_user_role_by_id(user.id, determined_role)
                 # Update profile picture if enabled and different from current
