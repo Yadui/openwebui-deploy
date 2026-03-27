@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { selectedPowerBIContext } from '$lib/stores/powerbiStore';
-	import { fetchWorkspaces, fetchDatasets } from '$lib/apis/tools/powerbi';
 	import { writable, get } from 'svelte/store';
+	import { fetchWorkspaces, fetchDatasets, fetchSchema } from '$lib/apis/tools/powerbi';
 
 	let workspaces = [];
 	let datasets = [];
@@ -46,12 +46,34 @@
 		loadDatasets(ws.id);
 	}
 
-	function selectDataset(ds) {
+	async function selectDataset(ds) {
 		selectedDataset.set(ds);
+
+		const wsId = get(selectedWorkspace)?.id;
+		const dsId = ds.id;
+
 		selectedPowerBIContext.set({
-			workspaceId: get(selectedWorkspace)?.id,
-			datasetId: ds.id
+			workspaceId: wsId,
+			datasetId: dsId
 		});
+		// 🔥 Persist to chat metadata so tool handler receives it
+		window.dispatchEvent(
+			new CustomEvent('update-metadata', {
+				detail: {
+					powerbi_workspace_id: wsId,
+					powerbi_dataset_id: dsId
+				}
+			})
+		);
+
+		// 🔥 NEW: fetch schema from backend (saves into powerbi_schemas folder)
+		try {
+			await fetchSchema(wsId, dsId);
+			console.log('Schema fetched & cached successfully.');
+		} catch (err) {
+			console.error('Failed to fetch schema:', err);
+		}
+
 		isOpen.set(false);
 	}
 
@@ -70,11 +92,13 @@
 						</label>
 						<select
 							class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-							on:change={(e) => selectWorkspace(workspaces.find(ws => ws.id === e.target.value))}
+							on:change={(e) => selectWorkspace(workspaces.find((ws) => ws.id === e.target.value))}
 						>
 							<option value="">Select a workspace</option>
 							{#each workspaces as ws}
-								<option value={ws.id} selected={get(selectedWorkspace)?.id === ws.id}>{ws.name}</option>
+								<option value={ws.id} selected={get(selectedWorkspace)?.id === ws.id}
+									>{ws.name}</option
+								>
 							{/each}
 						</select>
 					</div>
@@ -87,11 +111,13 @@
 							</label>
 							<select
 								class="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm px-3 py-2 focus:ring-2 focus:ring-green-500 focus:outline-none"
-								on:change={(e) => selectDataset(datasets.find(ds => ds.id === e.target.value))}
+								on:change={(e) => selectDataset(datasets.find((ds) => ds.id === e.target.value))}
 							>
 								<option value="">Select a dataset</option>
 								{#each datasets as ds}
-									<option value={ds.id} selected={get(selectedDataset)?.id === ds.id}>{ds.name}</option>
+									<option value={ds.id} selected={get(selectedDataset)?.id === ds.id}
+										>{ds.name}</option
+									>
 								{/each}
 							</select>
 						</div>
@@ -104,8 +130,14 @@
 
 <style>
 	@keyframes fadeIn {
-		from { opacity: 0; transform: translateY(-6px); }
-		to { opacity: 1; transform: translateY(0); }
+		from {
+			opacity: 0;
+			transform: translateY(-6px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 	.animate-fadeIn {
 		animation: fadeIn 0.15s ease-out;

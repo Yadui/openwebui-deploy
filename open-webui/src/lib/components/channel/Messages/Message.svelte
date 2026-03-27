@@ -339,10 +339,45 @@
 						{#if (message?.content ?? '').trim() === '' && message?.meta?.model_id}
 							<Skeleton />
 						{:else}
-							<Markdown
-								id={message.id}
-								content={message.content}
-							/>{#if message.created_at !== message.updated_at && (message?.meta?.model_id ?? null) === null}<span
+							<Markdown id={message.id} content={message.content} />
+							{#if message.powerbi_result && message.powerbi_result.status === 'success'}
+								<div
+									class="mt-3 p-3 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md"
+								>
+									<h4 class="font-semibold mb-2 text-sm">📊 Power BI Query Result</h4>
+									{#if message.powerbi_result.data.length > 0}
+										<table class="text-xs w-full border-collapse">
+											<thead>
+												<tr>
+													{#each Object.keys(message.powerbi_result.data[0]) as col}
+														<th
+															class="border-b border-gray-400 dark:border-gray-600 text-left py-1 px-2"
+															>{col}</th
+														>
+													{/each}
+												</tr>
+											</thead>
+											<tbody>
+												{#each message.powerbi_result.data.slice(0, 5) as row}
+													<tr>
+														{#each Object.values(row) as val}
+															<td class="py-1 px-2 border-b border-gray-200 dark:border-gray-700"
+																>{val}</td
+															>
+														{/each}
+													</tr>
+												{/each}
+											</tbody>
+										</table>
+										{#if message.powerbi_result.data.length > 5}
+											<p class="text-[11px] text-gray-500 mt-1">Showing top 5 rows</p>
+										{/if}
+									{:else}
+										<p class="text-[12px] italic text-gray-500">No rows returned.</p>
+									{/if}
+								</div>
+							{/if}
+							{#if message.created_at !== message.updated_at && (message?.meta?.model_id ?? null) === null}<span
 									class="text-gray-500 text-[10px]">({$i18n.t('edited')})</span
 								>{/if}
 						{/if}

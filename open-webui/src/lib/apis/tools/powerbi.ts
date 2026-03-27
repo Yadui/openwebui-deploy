@@ -13,3 +13,11 @@ export async function fetchDatasets(workspaceId: string) {
 	if (!response.ok) throw new Error('Failed to fetch Power BI datasets');
 	return response.json();
 }
+
+export async function fetchSchema(workspaceId: string, datasetId: string) {
+	const response = await fetch(`/api/powerbi/schema/${workspaceId}/${datasetId}`, {
+		credentials: 'include'
+	});
+	if (!response.ok) throw new Error('Failed to fetch Power BI schema');
+	return response.json();
+}

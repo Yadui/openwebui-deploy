@@ -1,3 +1,4 @@
+import os
 import asyncio
 import hashlib
 import json
@@ -49,6 +50,7 @@ from open_webui.utils.misc import (
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
+from open_webui.utils.powerbi_schema import load_schema
 
 
 log = logging.getLogger(__name__)
@@ -501,49 +503,55 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
             return response
         return None
 
-    def merge_models_lists(model_lists):
-        log.debug(f"merge_models_lists {model_lists}")
-        merged_list = []
+    def is_supported_openai_models(model_id):
+        if any(
+            name in model_id
+            for name in [
+                "babbage",
+                "dall-e",
+                "davinci",
+                "embedding",
+                "tts",
+                "whisper",
+            ]
+        ):
+            return False
+        return True
 
-        for idx, models in enumerate(model_lists):
-            if models is not None and "error" not in models:
-                merged_list.extend(
-                    [
-                        {
+    def get_merged_models(model_lists):
+        log.debug(f"merge_models_lists {model_lists}")
+        models = {}
+
+        for idx, model_list in enumerate(model_lists):
+            if model_list is not None and "error" not in model_list:
+                for model in model_list:
+                    model_id = model.get("id") or model.get("name")
+
+                    if (
+                        "api.openai.com"
+                        in request.app.state.config.OPENAI_API_BASE_URLS[idx]
+                        and not is_supported_openai_models(model_id)
+                    ):
+                        # Skip unwanted OpenAI models
+                        continue
+
+                    if model_id and model_id not in models:
+                        models[model_id] = {
                             **model,
-                            "name": model.get("name", model["id"]),
+                            "name": model.get("name", model_id),
                             "owned_by": "openai",
                             "openai": model,
                             "connection_type": model.get("connection_type", "external"),
                             "urlIdx": idx,
                         }
-                        for model in models
-                        if (model.get("id") or model.get("name"))
-                        and (
-                            "api.openai.com"
-                            not in request.app.state.config.OPENAI_API_BASE_URLS[idx]
-                            or not any(
-                                name in model["id"]
-                                for name in [
-                                    "babbage",
-                                    "dall-e",
-                                    "davinci",
-                                    "embedding",
-                                    "tts",
-                                    "whisper",
-                                ]
-                            )
-                        )
-                    ]
-                )
 
-        return merged_list
+        return models
 
-    models = {"data": merge_models_lists(map(extract_data, responses))}
+    models = get_merged_models(map(extract_data, responses))
     log.debug(f"models: {models}")
 
-    request.app.state.OPENAI_MODELS = {model["id"]: model for model in models["data"]}
-    return models
+    request.app.state.OPENAI_MODELS = models
+    return {"data": list(models.values())}
 
 
 @router.get("/models")
@@ -800,6 +808,13 @@ def convert_to_azure_payload(url, payload: dict, api_version: str):
     return url, payload
 
 
+# Make sure these imports are at the top of your openai.py
+import os
+import json
+from open_webui.utils.powerbi_schema import load_schema
+# ... other imports
+
+
 @router.post("/chat/completions")
 async def generate_chat_completion(
     request: Request,
@@ -815,26 +830,11 @@ async def generate_chat_completion(
     payload = {**form_data}
     metadata = payload.pop("metadata", None)
 
-    if metadata:
-        powerbi_workspace_id = metadata.get("powerbi_workspace_id")
-        powerbi_dataset_id = metadata.get("powerbi_dataset_id")
-        log.info(
-            f"💡 Injected Power BI context: {powerbi_workspace_id} | {powerbi_dataset_id}"
-        )
-        if powerbi_workspace_id and powerbi_dataset_id:
-            context_text = (
-                f"The user is working with Power BI Workspace ID: {powerbi_workspace_id} "
-                f"and Dataset ID: {powerbi_dataset_id}. "
-                f"Any data-related queries should use this dataset context for analysis or DAX queries."
-            )
-
-            # If messages exist, prepend a system message with this info
-            if "messages" in payload and isinstance(payload["messages"], list):
-                payload["messages"].insert(
-                    0, {"role": "system", "content": context_text}
-                )
-            else:
-                payload["messages"] = [{"role": "system", "content": context_text}]
+    # --- Add a debug log to see the incoming payload from the frontend ---
+    log.info(
+        f"[PBI_TOOL_DEBUG] Received payload from frontend. 'tool_ids' in form_data: {form_data.get('tool_ids')}"
+    )
+    log.info(f"[PBI_TOOL_DEBUG] Metadata received: {metadata}")
 
     model_id = form_data.get("model")
     model_info = Models.get_model_by_id(model_id)
@@ -924,6 +924,118 @@ async def generate_chat_completion(
             convert_logit_bias_input_to_json(payload["logit_bias"])
         )
 
+    # 🔥 --- START OF POWER BI TOOL INJECTION (CORRECTED LOGIC) --- 🔥
+
+    CHARTING_URL = os.getenv("CHARTING_URL")
+    log.info(f"[PBI_TOOL_DEBUG] Checking for CHARTING_URL. Found: {CHARTING_URL}")
+
+    if CHARTING_URL:
+        # 1. ALWAYS define the tool so the LLM knows it exists.
+        log.info("[PBI_TOOL_DEBUG] CHARTING_URL found. Injecting 'custom' tool.")
+        powerbi_tool_definition = {
+            "type": "function",
+            "function": {
+                "name": "powerbi_tool_handler",
+                "description": "Use this tool for any Power BI data requests. Requires the user's prompt, workspace ID, and dataset ID.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "The user's full, original prompt.",
+                        },
+                        "workspace_id": {
+                            "type": "string",
+                            "description": "The Power BI Workspace ID. If not known, ask the user to select one.",
+                        },
+                        "dataset_id": {
+                            "type": "string",
+                            "description": "The Power BI Dataset ID. If not known, ask the user to select one.",
+                        },
+                    },
+                    "required": ["prompt", "workspace_id", "dataset_id"],
+                },
+            },
+        }
+
+        # 2. ALWAYS add the 'custom' tool executor for Open WebUI
+        if "tools" not in payload:
+            payload["tools"] = []
+
+        #
+        # --- THIS IS THE CORRECTED BLOCK ---
+        #
+        payload["tools"].append(
+            {
+                "type": "function",  # This is the standard OpenAI type
+                "function": powerbi_tool_definition["function"],  # This is for the LLM
+                "custom": {  # This is the Open WebUI specific executor
+                    "name": "powerbi_tool_handler",  # This must match the function name
+                    "url": f"{CHARTING_URL}/auth/tool/powerbi",
+                    "pass_auth_header": True,
+                    "pass_cookie_header": True,
+                },
+            }
+        )
+        log.info(
+            f"[PBI_TOOL_DEBUG] 'custom' tool appended. Final tool list: {payload['tools']}"
+        )
+
+        # 3. CONDITIONALLY inject the schema/context IF it's selected
+        form_data_metadata = form_data.get("metadata", {})
+        if form_data_metadata and form_data_metadata.get("powerbi_dataset_id"):
+            log.info(
+                "[PBI_TOOL_DEBUG] Metadata *is* present in form_data. Injecting schema."
+            )
+            dataset_id = form_data_metadata.get("powerbi_dataset_id")
+            workspace_id = form_data_metadata.get("powerbi_workspace_id")
+
+            try:
+                schema = load_schema(dataset_id)
+                if schema:
+                    log.info(
+                        f"[PBI_TOOL_DEBUG] Schema found for {dataset_id}. Injecting into system prompt."
+                    )
+                    schema_prompt = (
+                        "You are a Power BI data analyst. The user has pre-selected a dataset. Use this context.\n"
+                        f"Workspace ID: {workspace_id}\n"
+                        f"Dataset ID: {dataset_id}\n"
+                        "Schema (Tables and Columns):\n"
+                        f"{json.dumps(schema, indent=2)}\n\n"
+                        "When you need data, MUST use 'powerbi_tool_handler' tool."
+                    )
+
+                    if (
+                        payload["messages"]
+                        and payload["messages"][0]["role"] == "system"
+                    ):
+                        payload["messages"][0]["content"] = (
+                            schema_prompt + "\n\n" + payload["messages"][0]["content"]
+                        )
+                    else:
+                        payload["messages"].insert(
+                            0, {"role": "system", "content": schema_prompt}
+                        )
+                else:
+                    log.warning(
+                        f"[PBI_TOOL_DEBUG] No schema found for dataset {dataset_id}."
+                    )
+            except Exception as e:
+                log.error(f"[PBI_TOOL_DEBUG] Failed to load/inject schema: {e}")
+        else:
+            log.info(
+                "[PBI_TOOL_DEBUG] No metadata in form_data. Tool injected *without* schema."
+            )
+
+    else:
+        log.warning("[PBI_TOOL_DEBUG] SKIPPED: CHARTING_URL env var not set.")
+
+    # 🔥 --- END OF NEW TOOL LOGIC --- 🔥
+
+    # --- Add a final debug log to see what is being sent to the LLM ---
+    final_tools = payload.get("tools")
+    log.info(f"[PBI_TOOL_DEBUG] Final 'tools' being sent to LLM: {final_tools}")
+
     headers, cookies = await get_headers_and_cookies(
         request, url, key, api_config, metadata, user=user
     )
@@ -942,6 +1054,10 @@ async def generate_chat_completion(
     else:
         request_url = f"{url}/chat/completions"
 
+    # --- Debug log for final payload ---
+    log.debug(
+        f"[PBI_TOOL_DEBUG] Final JSON payload being sent to model endpoint: {payload}"
+    )
     payload = json.dumps(payload)
 
     r = None
